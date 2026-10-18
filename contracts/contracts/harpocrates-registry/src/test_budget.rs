@@ -40,6 +40,7 @@
 //! | `register_anonymous_verified`| Tier-1 path with external verifier call.   |
 //! | `revoke_proof`               | Admin action; mutates existing record.     |
 //! | `get_proof_status`           | Read-only query; must be sub-linear.       |
+//! | `list_lineage_children`      | Read-only query; full page read bounds.    |
 //!
 //! ## Variance policy
 //!
@@ -680,3 +681,73 @@ fn budget_receipt_commit_baseline() {
         "commit_receipt_digest",
     );
 }
+
+const MAX_CPU_LIST_LINEAGE_CHILDREN_PAGE: u64 = 6_000_000;
+const MAX_MEM_LIST_LINEAGE_CHILDREN_PAGE: u64 = 1_500_000;
+
+/// Baseline for `list_lineage_children` at `MAX_LINEAGE_CHILDREN_PAGE` (50 entries).
+///
+/// Registers enough children for a full page and records CPU/memory for one
+/// `list_lineage_children` call, asserting it stays within resource thresholds.
+#[test]
+fn budget_list_lineage_children_full_page_baseline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(HarpocratesRegistry, ());
+    let client = HarpocratesRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let actor = Address::generate(&env);
+    let parent = b32(&env, 0x10);
+
+    client.init(&admin);
+    client.register_source(&actor, &b32(&env, 0x11), &b32(&env, 0x12), &parent);
+
+    // Register MAX_LINEAGE_CHILDREN_PAGE (50) children
+    let mut expected_children = SorobanVec::new(&env);
+    for i in 0..MAX_LINEAGE_CHILDREN_PAGE {
+        let mut child_arr = [0x20u8; 32];
+        child_arr[0] = (i & 0xFF) as u8;
+        child_arr[1] = ((i >> 8) & 0xFF) as u8;
+        let child = BytesN::from_array(&env, &child_arr);
+
+        let mut manifest_arr = [0x30u8; 32];
+        manifest_arr[0] = (i & 0xFF) as u8;
+        manifest_arr[1] = ((i >> 8) & 0xFF) as u8;
+        let manifest = BytesN::from_array(&env, &manifest_arr);
+
+        client.register_lineage(
+            &actor,
+            &SorobanVec::from_array(&env, [parent.clone()]),
+            &manifest,
+            &Symbol::new(&env, "crop"),
+            &child,
+            &1,
+        );
+        expected_children.push_back(child);
+    }
+
+    assert_eq!(
+        client.get_lineage_children_count(&parent),
+        MAX_LINEAGE_CHILDREN_PAGE
+    );
+
+    // Measure reading a full page of MAX_LINEAGE_CHILDREN_PAGE entries
+    let (cpu, mem, page) = measure(&env, || {
+        client.list_lineage_children(&parent, &0, &MAX_LINEAGE_CHILDREN_PAGE)
+    });
+
+    assert_eq!(page.total, MAX_LINEAGE_CHILDREN_PAGE);
+    assert_eq!(page.next_offset, MAX_LINEAGE_CHILDREN_PAGE);
+    assert_eq!(page.children.len(), MAX_LINEAGE_CHILDREN_PAGE);
+    assert_eq!(page.children, expected_children);
+
+    assert_within(
+        cpu,
+        mem,
+        MAX_CPU_LIST_LINEAGE_CHILDREN_PAGE,
+        MAX_MEM_LIST_LINEAGE_CHILDREN_PAGE,
+        "list_lineage_children full page",
+    );
+}
+
