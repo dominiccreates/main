@@ -1221,6 +1221,9 @@ pub struct GuardianSet {
     pub guardian: Address,
 }
 
+#[contractevent(topics = ["guardian", "clear"])]
+pub struct GuardianCleared {}
+
 #[contractevent(topics = ["admin", "propose"])]
 pub struct AdminProposed {
     #[topic]
@@ -3847,6 +3850,13 @@ impl HarpocratesRegistry {
             .persistent()
             .set(&DataKey::Guardian, &guardian);
         GuardianSet { guardian }.publish(&env);
+    }
+
+    /// Remove the emergency-pause guardian role. Admin-only.
+    pub fn clear_guardian(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+        env.storage().persistent().remove(&DataKey::Guardian);
+        GuardianCleared {}.publish(&env);
     }
 
     /// The currently configured guardian, if any.
